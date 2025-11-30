@@ -24,15 +24,16 @@ try:
     print("Press Ctrl+C to stop\n")
 
     # Oscillation parameters
-    amplitude = math.radians(35)  # 20 degrees total range (±10°)
-    frequency = 0.6  # 0.6 oscillations per second
-    torque_threshold = 0.75  # 0.5 Nm threshold to reverse direction
+    amplitude = math.radians(20)  # 20 degrees total range (±10°)
+    extra_amplitude_on_reverse = math.radians(10)  # Add 10 degrees when reversing
+    frequency = 0.5  # 0.6 oscillations per second
+    torque_threshold = 0.3  # 0.5 Nm threshold to reverse direction
     direction_change_cooldown = 0.5  # Wait 0.5 seconds after direction change
     direction_transition_duration = 0.5  # Take 0.5 seconds to smoothly reverse direction
 
     # Start the oscillation from current position by offsetting the sine wave
     # We'll blend from the initial position into the oscillation over time
-    blend_duration = 1.0  # 2 seconds to fully blend into oscillation
+    blend_duration = 2.0  # 2 seconds to fully blend into oscillation
 
     # Direction control: 1 for forward, -1 for reverse
     direction = 1
@@ -77,7 +78,7 @@ try:
         motor.send_command(
             position=target_position,
             velocity=0.0,
-            kp=15.0,
+            kp=20.0,
             kd=1.0,
             torque=0.0
         )
