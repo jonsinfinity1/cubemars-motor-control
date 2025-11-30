@@ -24,10 +24,9 @@ try:
     print("Press Ctrl+C to stop\n")
 
     # Oscillation parameters
-    amplitude = math.radians(20)  # 20 degrees total range (±10°)
-    extra_amplitude_on_reverse = math.radians(10)  # Add 10 degrees when reversing
-    frequency = 0.5  # 0.6 oscillations per second
-    torque_threshold = 0.3  # 0.5 Nm threshold to reverse direction
+    amplitude = math.radians(35)  # 20 degrees total range (±10°)
+    frequency = 0.6  # 0.6 oscillations per second
+    torque_threshold = 0.4  # 0.5 Nm threshold to reverse direction
     direction_change_cooldown = 0.5  # Wait 0.5 seconds after direction change
     direction_transition_duration = 0.5  # Take 0.5 seconds to smoothly reverse direction
 
