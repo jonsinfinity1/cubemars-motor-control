@@ -62,6 +62,9 @@ def main():
         print(f"Center:           {center:.2f}°")
         print(f"Total safe range: {total_range:.2f}°")
         
+        # Brief pause to ensure motor is settled
+        time.sleep(1.0)
+        
         # STEP 3: Create oscillator and run patterns
         print("\n" + "=" * 60)
         print("STEP 3: OSCILLATION WITHIN SAFE RANGE")

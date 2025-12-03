@@ -96,12 +96,13 @@ class FixedRangeOscillation:
             duration: Time to complete the move (seconds)
             verbose: Whether to print progress updates
         """
-        # Get current actual position from motor
+        # Get current actual position from motor WITHOUT commanding movement
+        # We use very low gains (compliant) to avoid sudden jumps
         self.driver.send_command(
             position=self.current_position,
             velocity=0.0,
-            kp=self.kp,
-            kd=self.kd,
+            kp=0.1,  # Very low stiffness - just querying position
+            kd=0.1,  # Very low damping
             torque=0.0
         )
         time.sleep(0.05)
@@ -109,6 +110,7 @@ class FixedRangeOscillation:
         feedback = self.driver.read_feedback(timeout=0.1)
         if feedback:
             start_position = feedback['position']
+            self.current_position = start_position  # Update our tracked position
         else:
             start_position = self.current_position
             if verbose:

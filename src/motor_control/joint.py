@@ -130,14 +130,18 @@ class Joint:
         """
         Update internal state from motor feedback.
         
+        Uses very low gains to avoid commanding movement - we're just
+        querying the current position.
+        
         Python Note: Leading underscore indicates this is "private" - meant
         for internal use only. It's a convention, not enforced like Java's private.
         """
+        # Use very low gains to avoid sudden movement when querying position
         self.driver.send_command(
             position=self.current_position,
             velocity=0.0,
-            kp=self.default_kp,
-            kd=self.default_kd,
+            kp=0.1,  # Very low stiffness - just querying
+            kd=0.1,  # Very low damping
             torque=0.0
         )
         time.sleep(0.05)
@@ -196,6 +200,11 @@ class Joint:
         kp = kp or self.default_kp
         kd = kd or self.default_kd
         target_rad = math.radians(target_deg)
+        
+        # CRITICAL: Read actual position before starting move
+        # This ensures we start from where the motor actually is,
+        # not from stale state that might be wrong
+        self._update_state()
         
         if verbose:
             print(f"[{self.name}] Moving from {self.get_position_degrees():.2f}° "
@@ -322,12 +331,19 @@ class Joint:
         
         min_deg = math.degrees(min_pos)
         max_deg = math.degrees(max_pos)
+        center_deg = (min_deg + max_deg) / 2
         
         if verbose:
             print(f"\n[{self.name}] Range discovery complete:")
             print(f"  Min: {min_deg:7.2f}°")
             print(f"  Max: {max_deg:7.2f}°")
             print(f"  Total range: {max_deg - min_deg:7.2f}°")
+        
+        # Return to center position for safety
+        if verbose:
+            print(f"\n[{self.name}] Returning to center ({center_deg:.2f}°)...")
+        self.move_to(center_deg, duration=3.0, verbose=False)
+        time.sleep(0.5)
         
         return (min_deg, max_deg)
     
@@ -471,6 +487,8 @@ class Joint:
         kp = kp or self.default_kp
         kd = kd or self.default_kd
         
+        # Read actual position before holding
+        self._update_state()
         hold_position = self.current_position
         
         print(f"[{self.name}] Holding position at {self.get_position_degrees():.2f}°")
