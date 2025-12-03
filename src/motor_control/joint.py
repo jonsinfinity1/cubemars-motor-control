@@ -1,56 +1,97 @@
 #!/usr/bin/env python3
 """
-High-Level Motor Control with State Management
+High-Level Joint Control with State Management
 
-This module provides the Motor class which wraps low-level motor controllers
+This module provides the Joint class which wraps low-level motor drivers
 and provides high-level operations like smooth moves, range discovery, and
 state tracking.
+
+Robotics Context:
+----------------
+In robotics, we think in terms of joints (movable connections) rather than
+motors (actuators). A joint has:
+- Physical range of motion (limits)
+- Current state (position, velocity, torque)
+- Behaviors (move to position, hold position, etc.)
+
+The motor/actuator is just the hardware that makes the joint move.
+This class represents the joint-level abstraction.
 """
 
 import time
 import math
 
 
-class Motor:
+class Joint:
     """
-    High-level motor control with state management and common operations.
+    High-level robotic joint control with state management.
     
-    This wraps a low-level MotorController and provides higher-level
-    functionality like smooth moves, range discovery, and state tracking.
+    This wraps a low-level MotorDriver and provides:
+    - State tracking (position, velocity, torque)
+    - Range discovery (finding physical limits via force sensing)
+    - Smooth trajectory generation (S-curves for natural motion)
+    - Safety management (limits, timeouts, error handling)
     
-    Think of this as a service layer - it coordinates multiple operations
-    and maintains state, while delegating actual hardware communication
-    to the underlying motor controller.
+    Design Pattern:
+    --------------
+    This uses the Strategy pattern via composition - the Joint "has-a"
+    driver, not "is-a" driver. This means you can swap different motor
+    types (CubeMars, T-Motor, Maxon, etc.) without changing this class.
     
-    Example usage:
-        controller = CubeMarsController(motor_id=1)
-        motor = Motor(controller, name="left_knee", kp=20.0, kd=1.0)
-        motor.initialize()
-        motor.discover_range()
-        motor.move_to(45.0, duration=2.0)
+    Java Analogy:
+    ------------
+    In Java you might write:
+        public class Joint {
+            private MotorDriver driver;  // Dependency injection
+            public Joint(MotorDriver driver) {
+                this.driver = driver;
+            }
+        }
+    
+    Python does the same thing, just with less ceremony.
+    
+    Example Usage:
+    -------------
+        from motor_drivers import CubeMarsDriver
+        from motor_control import Joint
+        
+        driver = CubeMarsDriver(motor_id=1)
+        knee = Joint(driver=driver, name="left_knee", kp=20.0, kd=1.0)
+        
+        knee.initialize()
+        knee.discover_range()
+        knee.move_to(45.0, duration=2.0)
+        knee.shutdown()
     """
     
-    def __init__(self, motor_controller, motor_id=1, name=None, kp=20.0, kd=1.0):
+    def __init__(self, driver, name=None, kp=20.0, kd=1.0):
         """
-        Initialize the motor with a controller.
+        Initialize joint controller.
         
         Args:
-            motor_controller: Instance implementing MotorController interface
-            motor_id: Motor CAN ID
+            driver: MotorDriver implementation (e.g., CubeMarsDriver)
             name: Human-readable name (e.g., "left_knee", "right_elbow")
-            kp: Default position gain (stiffness)
-            kd: Default damping gain
-            
-        This is dependency injection - we pass in the controller rather than
-        creating it here. Makes testing easier and supports different motor types.
+            kp: Default position gain / stiffness (0-500 typical)
+            kd: Default damping gain (0-5 typical)
+        
+        Robotics Note on Gains:
+        ----------------------
+        - kp (position gain): How stiffly the joint resists position error
+          * High (50-100): Precise, fights external forces, can be jerky
+          * Medium (20-50): Balanced for humanoid motion
+          * Low (5-20): Compliant, yields to external forces
+        
+        - kd (damping gain): How much the joint resists velocity changes
+          * High (2-5): Heavily damped, slow, smooth
+          * Medium (0.5-2): Natural motion
+          * Low (0.1-0.5): Fast, underdamped, can oscillate
         """
-        self.controller = motor_controller
-        self.motor_id = motor_id
-        self.name = name or f"Motor_{motor_id}"
+        self.driver = driver
+        self.name = name or "Joint"
         self.default_kp = kp
         self.default_kd = kd
         
-        # State tracking
+        # Current state tracking
         self.current_position = 0.0  # radians
         self.current_velocity = 0.0  # rad/s
         self.current_torque = 0.0    # Nm
@@ -61,17 +102,23 @@ class Motor:
         self.max_position = None  # radians
         self.range_discovered = False
         
-        # Safety limits
+        # Safety parameters
         self.safety_margin = math.radians(5)  # 5 degrees from hard stops
     
     def initialize(self):
         """
-        Initialize the motor for operation.
-        Call this before any other operations.
+        Initialize the joint for operation.
+        
+        This:
+        1. Clears any stale CAN messages
+        2. Enables motor control mode
+        3. Reads initial position
+        
+        Must be called before any other operations.
         """
         print(f"[{self.name}] Initializing...")
-        self.controller.flush_can_buffer()
-        self.controller.enter_motor_mode()
+        self.driver.flush_buffer()
+        self.driver.enter_motor_mode()
         time.sleep(0.5)
         
         # Read initial position
@@ -83,10 +130,10 @@ class Motor:
         """
         Update internal state from motor feedback.
         
-        Leading underscore indicates this is "private" - meant for internal
-        use only. It's a Python convention, not enforced like Java's private.
+        Python Note: Leading underscore indicates this is "private" - meant
+        for internal use only. It's a convention, not enforced like Java's private.
         """
-        self.controller.send_command(
+        self.driver.send_command(
             position=self.current_position,
             velocity=0.0,
             kp=self.default_kp,
@@ -95,7 +142,7 @@ class Motor:
         )
         time.sleep(0.05)
         
-        feedback = self.controller.read_feedback(timeout=0.1)
+        feedback = self.driver.read_feedback(timeout=0.1)
         if feedback:
             self.current_position = feedback['position']
             self.current_velocity = feedback.get('velocity', 0.0)
@@ -115,8 +162,23 @@ class Motor:
         """
         Move smoothly to a target position using S-curve trajectory.
         
-        The S-curve provides smooth acceleration and deceleration, which is
-        important for preventing jerky motion and protecting mechanical components.
+        Robotics: S-Curve Trajectories
+        ------------------------------
+        An S-curve provides smooth acceleration and deceleration:
+        - Starts with zero velocity (smooth start)
+        - Accelerates smoothly
+        - Cruises at max velocity
+        - Decelerates smoothly
+        - Ends with zero velocity (smooth stop)
+        
+        Why this matters:
+        - Prevents jerky motion that can damage mechanical components
+        - Reduces wear on gearboxes and joints
+        - Makes motion look more natural for humanoid robots
+        - Minimizes oscillations and overshoot
+        
+        We use a cosine-based S-curve: position = 0.5 - 0.5*cos(π*t)
+        This gives the classic S-shaped velocity profile.
         
         Args:
             target_deg: Target position in degrees
@@ -129,7 +191,7 @@ class Motor:
             bool: True if move completed successfully
         """
         if not self.is_initialized:
-            raise RuntimeError(f"[{self.name}] Motor not initialized. Call initialize() first.")
+            raise RuntimeError(f"[{self.name}] Not initialized. Call initialize() first.")
         
         kp = kp or self.default_kp
         kd = kd or self.default_kd
@@ -150,12 +212,12 @@ class Motor:
                 done = True
             else:
                 # S-curve trajectory: smooth acceleration and deceleration
-                # The cosine function creates an S-shaped velocity profile
+                # The cosine function creates the S-shaped velocity profile
                 progress = 0.5 - 0.5 * math.cos((elapsed / duration) * math.pi)
                 position = start_position + (target_rad - start_position) * progress
                 done = False
             
-            self.controller.send_command(
+            self.driver.send_command(
                 position=position,
                 velocity=0.0,
                 kp=kp,
@@ -163,7 +225,7 @@ class Motor:
                 torque=0.0
             )
             
-            feedback = self.controller.read_feedback(timeout=0.01)
+            feedback = self.driver.read_feedback(timeout=0.01)
             if feedback:
                 self.current_position = feedback['position']
                 self.current_velocity = feedback.get('velocity', 0.0)
@@ -182,28 +244,45 @@ class Motor:
         
         return True
     
-    def discover_range(self, torque_threshold=0.5, creep_velocity=0.15, 
+    def discover_range(self, torque_threshold=0.5, creep_velocity=0.15,
                        max_exploration_time=15.0, verbose=True):
         """
         Discover the full range of motion by exploring until hitting stops.
         
-        This method slowly moves the joint in each direction until it detects
-        a physical stop (via torque feedback), then backs off slightly and
-        records the safe limits.
+        Robotics: Range Discovery
+        -------------------------
+        This method uses force sensing to find physical limits. It slowly
+        moves the joint in each direction until it detects a hard stop
+        (via torque feedback), then backs off slightly and records the
+        safe operating limits.
+        
+        Why this is better than manual calibration:
+        - Automatically adapts to different mechanical designs
+        - Finds the actual limits, not theoretical limits
+        - Can re-run if mechanical stops change
+        - Safer than sending commands beyond limits
+        
+        The process:
+        1. Move to center (0°)
+        2. Explore positive direction until hitting stop
+        3. Back off and record max position
+        4. Return to center
+        5. Explore negative direction until hitting stop
+        6. Back off and record min position
         
         Args:
             torque_threshold: Torque (Nm) indicating a hard stop
-            creep_velocity: Exploration speed (rad/s)
+            creep_velocity: Slow exploration speed (rad/s)
             max_exploration_time: Safety timeout per direction (seconds)
             verbose: Print progress updates
             
         Returns:
             tuple: (min_position_deg, max_position_deg)
             
-        This method updates the motor's internal range state.
+        This method updates the joint's internal range state.
         """
         if not self.is_initialized:
-            raise RuntimeError(f"[{self.name}] Motor not initialized. Call initialize() first.")
+            raise RuntimeError(f"[{self.name}] Not initialized. Call initialize() first.")
         
         if verbose:
             print(f"\n[{self.name}] Starting range discovery...")
@@ -219,7 +298,7 @@ class Motor:
         # Explore positive direction (max)
         if verbose:
             print(f"\n[{self.name}] Exploring positive direction...")
-        max_pos = self._explore_direction(1, torque_threshold, creep_velocity, 
+        max_pos = self._explore_direction(1, torque_threshold, creep_velocity,
                                           max_exploration_time, verbose)
         time.sleep(1.0)
         
@@ -259,7 +338,7 @@ class Motor:
         
         Internal helper method for discover_range(). Uses very compliant
         control (low kp/kd) so the motor can "feel" the stop without
-        fighting it.
+        fighting it aggressively.
         
         Args:
             direction: 1 for positive, -1 for negative
@@ -275,13 +354,14 @@ class Motor:
         stop_detected = False
         stop_position = None
         
-        # Very compliant control for exploration - we want to feel the stop
+        # Very compliant control for exploration
+        # We want to feel the stop, not fight it
         kp = 5.0   # Low stiffness
         kd = 0.5   # Light damping
         
         while not stop_detected and (time.time() - start_time) < max_exploration_time:
             # Command a slow velocity in the exploration direction
-            self.controller.send_command(
+            self.driver.send_command(
                 position=self.current_position + (direction * 0.1),
                 velocity=direction * creep_velocity,
                 kp=kp,
@@ -289,7 +369,7 @@ class Motor:
                 torque=0.0
             )
             
-            feedback = self.controller.read_feedback(timeout=0.02)
+            feedback = self.driver.read_feedback(timeout=0.02)
             
             if feedback:
                 self.current_position = feedback['position']
@@ -322,13 +402,13 @@ class Motor:
         if verbose:
             print(f"  Backing off 2° from stop...")
         
-        # Use direct movement for quick backoff
+        # Quick backoff movement
         start_pos = self.current_position
         for i in range(20):
             progress = i / 20.0
             pos = start_pos + (safe_position - start_pos) * progress
-            self.controller.send_command(pos, 0.0, 10.0, 0.8, 0.0)
-            self.controller.read_feedback(timeout=0.01)
+            self.driver.send_command(pos, 0.0, 10.0, 0.8, 0.0)
+            self.driver.read_feedback(timeout=0.01)
             time.sleep(0.05)
         
         self.current_position = safe_position
@@ -337,6 +417,12 @@ class Motor:
     def get_safe_range(self):
         """
         Get the safe operating range (with safety margins from hard stops).
+        
+        Returns a tuple with all the useful range information:
+        - Safe minimum (with margin from hard stop)
+        - Safe maximum (with margin from hard stop)
+        - Center position
+        - Total safe range
         
         Returns:
             tuple: (safe_min_deg, safe_max_deg, center_deg, range_deg)
@@ -363,6 +449,14 @@ class Motor:
         """
         Hold current position with impedance control.
         
+        This actively maintains the current position using impedance control.
+        The joint will resist external forces (how much depends on kp/kd).
+        
+        Useful for:
+        - Testing impedance control tuning
+        - Maintaining a specific posture
+        - Demonstrating force interaction
+        
         Args:
             duration: How long to hold (None = indefinite, until Ctrl+C)
             kp: Position gain (uses default if None)
@@ -371,7 +465,7 @@ class Motor:
         """
         if not self.is_initialized:
             raise RuntimeError(
-                f"[{self.name}] Motor not initialized. Call initialize() first."
+                f"[{self.name}] Not initialized. Call initialize() first."
             )
         
         kp = kp or self.default_kp
@@ -396,7 +490,7 @@ class Motor:
                 if duration and (current_time - start_time) >= duration:
                     break
                 
-                self.controller.send_command(
+                self.driver.send_command(
                     position=hold_position,
                     velocity=0.0,
                     kp=kp,
@@ -404,7 +498,7 @@ class Motor:
                     torque=0.0
                 )
                 
-                feedback = self.controller.read_feedback(timeout=0.01)
+                feedback = self.driver.read_feedback(timeout=0.01)
                 if feedback:
                     self.current_position = feedback['position']
                     self.current_torque = feedback.get('torque', 0.0)
@@ -422,7 +516,15 @@ class Motor:
             print(f"\n[{self.name}] Hold interrupted")
     
     def shutdown(self):
-        """Clean shutdown of the motor"""
+        """
+        Clean shutdown of the joint.
+        
+        1. Exits motor mode (motor goes limp)
+        2. Closes driver
+        3. Marks as not initialized
+        
+        Always call this before program exit!
+        """
         print(f"[{self.name}] Shutting down...")
-        self.controller.close()
+        self.driver.close()
         self.is_initialized = False

@@ -1,44 +1,44 @@
 #!/usr/bin/env python3
 """
-Example: Fixed Range Oscillation
+Oscillation Example
 
-This script demonstrates how to use the FixedRangeOscillation class
-to create smooth oscillating motion patterns.
+Demonstrates how to use the FixedRangeOscillation class to create
+smooth oscillating motion patterns.
 """
 
-import sys
-from pathlib import Path
-
-# Add parent directory to path so we can import motor_control
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import time
-from motors.cubemars_motor import CubeMarsMotor
-from motor_control.oscillation import FixedRangeOscillation
+from motor_drivers import CubeMarsDriver
+from motor_control import FixedRangeOscillation
 
 
 def main():
     """
     Demonstration of various oscillation patterns.
+    
+    Shows:
+    - Small, fast oscillations
+    - Large, slow oscillations
+    - Offset oscillations (not centered at zero)
+    - Interactive torque reversal
     """
-    motor = CubeMarsMotor(motor_id=1)
+    driver = CubeMarsDriver(motor_id=1)
     
     try:
         # Initialize motor
-        motor.flush_can_buffer()
-        motor.enter_motor_mode()
+        driver.flush_buffer()
+        driver.enter_motor_mode()
         time.sleep(0.5)
         
         # Create oscillator with moderate impedance control
         oscillator = FixedRangeOscillation(
-            motor_controller=motor,
+            motor_driver=driver,
             kp=20.0,  # Moderate stiffness
             kd=1.0    # Light damping
         )
         
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("OSCILLATION DEMONSTRATION")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
         
         # Example 1: Small, moderate-speed oscillation at center
         print("Example 1: Small amplitude, moderate frequency")
@@ -83,21 +83,21 @@ def main():
             reverse_cooldown=0.5
         )
         
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("Demonstration complete!")
-        print("="*60)
-        
+        print("=" * 60)
+    
     except KeyboardInterrupt:
         print("\n\nProgram interrupted by user.")
-        
+    
     except Exception as e:
         print(f"\nError occurred: {e}")
         import traceback
         traceback.print_exc()
-        
+    
     finally:
         try:
-            motor.close()
+            driver.close()
         except:
             pass
         print("\nMotor stopped and CAN bus closed.")

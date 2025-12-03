@@ -1,14 +1,13 @@
 """
-Motor Control Library
+Motor Control Package
 
-Simple motor control for robotics projects.
+High-level control logic for robotic joints and behaviors.
+This layer is hardware-agnostic - it works with any MotorDriver implementation.
 """
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'
 
-# Use relative imports (. means current package)
-from .motor_controller import MotorController
-from .cubemars_controller import CubeMarsController
-from .fixed_range_oscillation import FixedRangeOscillation
+from .joint import Joint
+from .oscillation import FixedRangeOscillation
 
-__all__ = ['MotorController', 'CubeMarsController', 'FixedRangeOscillation']
+__all__ = ['Joint', 'FixedRangeOscillation']

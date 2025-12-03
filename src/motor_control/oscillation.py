@@ -4,6 +4,12 @@ Fixed Range Oscillation
 
 Provides smooth, controlled oscillation within specified limits using
 sinusoidal motion profiles with S-curve blending.
+
+Useful for:
+- Testing joint range of motion
+- Creating rhythmic behaviors (walking gaits, breathing motions)
+- Demonstrating impedance control
+- Interactive demonstrations (torque-based direction reversal)
 """
 
 import time
@@ -14,33 +20,63 @@ class FixedRangeOscillation:
     """
     Manages smooth sinusoidal oscillation within a defined range.
     
-    This class encapsulates all the oscillation logic, making it reusable
-    across different joints in your humanoid robot. You can create multiple
-    instances for different joints, each with their own oscillation parameters.
+    This class encapsulates oscillation logic, making it reusable across
+    different joints in your humanoid robot. Each joint can have its own
+    oscillator instance with different parameters.
     
-    Example usage:
-        oscillator = FixedRangeOscillation(motor_controller, kp=20.0, kd=1.0)
+    Robotics Context:
+    ----------------
+    Oscillating motion is fundamental in robotics:
+    - Walking gaits are oscillations of leg joints
+    - Breathing motions for humanoid realism
+    - Swimming motions for underwater robots
+    - Testing to verify mechanical range and smoothness
+    
+    This implementation uses:
+    - Sinusoidal motion for smooth, natural oscillation
+    - S-curve blending for smooth start/stop
+    - Optional torque-based interaction (robot responds to external forces)
+    
+    Design Pattern:
+    --------------
+    This uses composition - it "has-a" motor driver but doesn't "own" it.
+    In Java terms, this is dependency injection via the constructor.
+    
+    Example Usage:
+    -------------
+        from motor_drivers import CubeMarsDriver
+        from motor_control import FixedRangeOscillation
+        
+        driver = CubeMarsDriver(motor_id=1)
+        driver.enter_motor_mode()
+        
+        oscillator = FixedRangeOscillation(driver, kp=20.0, kd=1.0)
         oscillator.oscillate(
             center_position_deg=0,
-            amplitude_deg=30,
-            frequency=0.6,
+            amplitude_deg=30,      # ±15° from center
+            frequency=0.6,         # 0.6 Hz (1.67 second period)
             duration=10
         )
+        
+        driver.close()
     """
     
-    def __init__(self, motor_controller, kp=20.0, kd=1.0):
+    def __init__(self, motor_driver, kp=20.0, kd=1.0):
         """
         Initialize the oscillation controller.
         
         Args:
-            motor_controller: Motor controller instance (CubeMarsMotor or similar)
+            motor_driver: MotorDriver instance (e.g., CubeMarsDriver)
             kp: Position gain for impedance control (stiffness)
             kd: Damping gain for impedance control
-            
-        Note: This stores a reference to the motor controller (composition).
-        The oscillator "has-a" motor rather than "is-a" motor.
+        
+        Python Note:
+        -----------
+        Storing the motor_driver reference is like dependency injection in Java.
+        The class doesn't create its own driver - it uses what's provided.
+        This makes testing easier (you can inject a mock driver).
         """
-        self.motor = motor_controller
+        self.driver = motor_driver
         self.kp = kp
         self.kd = kd
         
@@ -52,9 +88,8 @@ class FixedRangeOscillation:
         """
         Move smoothly to a target position using S-curve trajectory.
         
-        This is a public helper method that can be used standalone for
-        smooth position changes. In Java you might mark this private,
-        but in Python it's useful to keep it public.
+        This is a helper method for positioning before oscillation starts.
+        It's public rather than private because it's useful standalone too.
         
         Args:
             target_position: Target position in radians
@@ -62,16 +97,16 @@ class FixedRangeOscillation:
             verbose: Whether to print progress updates
         """
         # Get current actual position from motor
-        self.motor.send_command(
-            position=self.current_position, 
+        self.driver.send_command(
+            position=self.current_position,
             velocity=0.0,
-            kp=self.kp, 
-            kd=self.kd, 
+            kp=self.kp,
+            kd=self.kd,
             torque=0.0
         )
         time.sleep(0.05)
         
-        feedback = self.motor.read_feedback(timeout=0.1)
+        feedback = self.driver.read_feedback(timeout=0.1)
         if feedback:
             start_position = feedback['position']
         else:
@@ -97,7 +132,7 @@ class FixedRangeOscillation:
                 position = start_position + (target_position - start_position) * progress
                 done = False
             
-            self.motor.send_command(
+            self.driver.send_command(
                 position=position,
                 velocity=0.0,
                 kp=self.kp,
@@ -105,7 +140,7 @@ class FixedRangeOscillation:
                 torque=0.0
             )
             
-            feedback = self.motor.read_feedback(timeout=0.01)
+            feedback = self.driver.read_feedback(timeout=0.01)
             if feedback:
                 self.current_position = feedback['position']
                 
@@ -122,8 +157,8 @@ class FixedRangeOscillation:
         if verbose:
             print(f"Reached target position: {math.degrees(target_position):.2f}°\n")
     
-    def oscillate(self, 
-                  center_position_deg, 
+    def oscillate(self,
+                  center_position_deg,
                   amplitude_deg,
                   frequency=0.6,
                   duration=None,
@@ -135,28 +170,49 @@ class FixedRangeOscillation:
         """
         Perform smooth oscillation around a center position.
         
-        This creates a sinusoidal motion pattern with smooth S-curve blending
-        for transitions. The motion is natural and prevents jerky movements
-        that could damage mechanical components.
+        Robotics: Sinusoidal Motion
+        ---------------------------
+        This creates motion following: position = center + (amplitude/2) * sin(2πft)
+        
+        Where:
+        - f is frequency in Hz (oscillations per second)
+        - t is time in seconds
+        - amplitude is total range (±amplitude/2 from center)
+        
+        The sine wave provides:
+        - Smooth acceleration at the ends of travel
+        - Smooth deceleration at the ends of travel
+        - Natural, continuous motion
+        
+        S-curve blending is used at start/stop to avoid sudden jerks.
+        
+        Torque Reversal Feature:
+        ------------------------
+        When enabled, the robot monitors torque feedback and reverses
+        direction when it feels resistance. This creates interactive
+        behavior - push the joint and it pushes back by reversing.
         
         Args:
             center_position_deg: Center of oscillation in degrees
             amplitude_deg: Total range of motion in degrees (±amplitude/2 from center)
             frequency: Oscillations per second (Hz)
+                      0.5 Hz = 2 second period (slow)
+                      1.0 Hz = 1 second period (medium)
+                      2.0 Hz = 0.5 second period (fast)
             duration: How long to oscillate (seconds). None = run until interrupted
             move_to_start_duration: Time to move to starting position (seconds)
             print_interval: How often to print status (seconds)
             torque_reverse_enabled: If True, reverse direction on high torque
             torque_threshold: Torque (Nm) that triggers reversal
             reverse_cooldown: Minimum time between reversals (seconds)
-            
+        
         Returns:
             None (runs until duration expires or KeyboardInterrupt)
-            
-        Example usage:
+        
+        Example Usage:
             # Oscillate ±15° around 45° at 0.5 Hz for 10 seconds
             oscillator.oscillate(
-                center_position_deg=45, 
+                center_position_deg=45,
                 amplitude_deg=30,  # ±15°
                 frequency=0.5,
                 duration=10
@@ -169,17 +225,17 @@ class FixedRangeOscillation:
         # Calculate the starting position (center of oscillation)
         start_position = center_position
         
-        print("="*60)
+        print("=" * 60)
         print("FIXED RANGE OSCILLATION")
-        print("="*60)
+        print("=" * 60)
         print(f"Center position:  {center_position_deg:6.2f}°")
-        print(f"Amplitude:        ±{amplitude_deg/2:5.2f}° (total range: {amplitude_deg:.2f}°)")
-        print(f"Frequency:        {frequency:.2f} Hz ({1/frequency:.2f}s per cycle)")
-        print(f"Range:            {center_position_deg - amplitude_deg/2:.2f}° to "
-              f"{center_position_deg + amplitude_deg/2:.2f}°")
+        print(f"Amplitude:        ±{amplitude_deg / 2:5.2f}° (total range: {amplitude_deg:.2f}°)")
+        print(f"Frequency:        {frequency:.2f} Hz ({1 / frequency:.2f}s per cycle)")
+        print(f"Range:            {center_position_deg - amplitude_deg / 2:.2f}° to "
+              f"{center_position_deg + amplitude_deg / 2:.2f}°")
         if torque_reverse_enabled:
             print(f"Torque reversal:  ENABLED (threshold: {torque_threshold:.2f} Nm)")
-        print("="*60 + "\n")
+        print("=" * 60 + "\n")
         
         # Move to starting position
         print("Moving to starting position...")
@@ -187,7 +243,7 @@ class FixedRangeOscillation:
         time.sleep(0.5)
         
         # Update current position after move
-        self.motor.send_command(
+        self.driver.send_command(
             position=start_position,
             velocity=0.0,
             kp=self.kp,
@@ -195,7 +251,7 @@ class FixedRangeOscillation:
             torque=0.0
         )
         time.sleep(0.05)
-        feedback = self.motor.read_feedback(timeout=0.1)
+        feedback = self.driver.read_feedback(timeout=0.1)
         if feedback:
             initial_position = feedback['position']
         else:
@@ -246,8 +302,8 @@ class FixedRangeOscillation:
                         # S-curve transition between directions
                         progress = transition_time / direction_transition_duration
                         smooth_progress = 0.5 - 0.5 * math.cos(progress * math.pi)
-                        direction_multiplier = (old_direction * (1 - smooth_progress) + 
-                                              new_direction * smooth_progress)
+                        direction_multiplier = (old_direction * (1 - smooth_progress) +
+                                               new_direction * smooth_progress)
                     else:
                         # Transition complete
                         direction_multiplier = new_direction
@@ -256,19 +312,19 @@ class FixedRangeOscillation:
                     direction_multiplier = direction
                 
                 # Calculate oscillation (centered at 0)
-                oscillation = (direction_multiplier * amplitude / 2 * 
-                             math.sin(2 * math.pi * frequency * t))
+                oscillation = (direction_multiplier * amplitude / 2 *
+                              math.sin(2 * math.pi * frequency * t))
                 
                 # Blend from initial position to oscillation pattern
                 if t < blend_duration:
                     blend_factor = 0.5 - 0.5 * math.cos(t / blend_duration * math.pi)
-                    target_position = (initial_position * (1 - blend_factor) + 
-                                     (center_position + oscillation) * blend_factor)
+                    target_position = (initial_position * (1 - blend_factor) +
+                                      (center_position + oscillation) * blend_factor)
                 else:
                     target_position = center_position + oscillation
                 
                 # Send motor command
-                self.motor.send_command(
+                self.driver.send_command(
                     position=target_position,
                     velocity=0.0,
                     kp=self.kp,
@@ -277,7 +333,7 @@ class FixedRangeOscillation:
                 )
                 
                 # Read feedback
-                feedback = self.motor.read_feedback(timeout=0.01)
+                feedback = self.driver.read_feedback(timeout=0.01)
                 
                 if feedback:
                     current_deg = math.degrees(feedback['position'])
@@ -289,8 +345,8 @@ class FixedRangeOscillation:
                     # Check for torque-based direction reversal
                     if torque_reverse_enabled:
                         time_since_last_change = t - last_direction_change_time
-                        if (abs(torque_nm) >= torque_threshold and 
-                            time_since_last_change >= reverse_cooldown):
+                        if (abs(torque_nm) >= torque_threshold and
+                                time_since_last_change >= reverse_cooldown):
                             # Start smooth direction transition
                             old_direction = direction
                             new_direction = -direction
@@ -309,7 +365,7 @@ class FixedRangeOscillation:
                         last_print_time = current_time
                 
                 time.sleep(0.01)  # 100Hz control loop
-                
+        
         except KeyboardInterrupt:
             print("\n\nOscillation interrupted by user.")
             self.is_oscillating = False
