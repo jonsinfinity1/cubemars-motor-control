@@ -6,7 +6,6 @@ MIT Mini Cheetah Protocol Implementation
 
 import can
 import time
-import math
 
 
 class CubeMarsMotor:

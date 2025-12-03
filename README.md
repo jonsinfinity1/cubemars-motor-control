@@ -45,7 +45,7 @@ This demo features:
 ### Basic Motor Control
 ```bash
 cd src
-python cubemars_control.py
+python cubemars_motor.py
 ```
 
 Simple sinusoidal motion demo showing basic motor control.

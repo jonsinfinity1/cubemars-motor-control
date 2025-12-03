@@ -1,11 +1,12 @@
 import time
 import math
-from cubemars_control import CubeMarsMotor
+from motors.cubemars_motor import CubeMarsMotor
 
 motor = CubeMarsMotor(motor_id=1)
 
 try:
     motor.flush_can_buffer()
+    motor.enter_motor_mode()
     motor.enter_motor_mode()
     time.sleep(0.5)
 

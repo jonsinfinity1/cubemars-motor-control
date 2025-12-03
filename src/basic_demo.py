@@ -6,7 +6,7 @@ Simple sinusoidal motion example
 
 import time
 import math
-from cubemars_control import CubeMarsMotor
+from motors.cubemars_motor import CubeMarsMotor
 
 
 def main():
