@@ -60,8 +60,8 @@ def move_and_hold(config):
             print(f"\n{name} (ID: {motor_id})")
             print(f"  Target: {starting_pos:.1f}°")
             
-            # Create driver and joint
-            driver = CubeMarsDriver(motor_id=motor_id)
+            # Create driver and joint (with offset from config)
+            driver = CubeMarsDriver.from_config(motor_id=motor_id)
             joint = Joint(
                 driver=driver,
                 name=name,

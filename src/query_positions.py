@@ -32,7 +32,7 @@ def query_motor_position(motor_id, motor_name):
     just queries where it currently is.
     """
     try:
-        driver = CubeMarsDriver(motor_id=motor_id)
+        driver = CubeMarsDriver.from_config(motor_id=motor_id)
         driver.flush_buffer()
         driver.enter_motor_mode()
         time.sleep(0.2)
