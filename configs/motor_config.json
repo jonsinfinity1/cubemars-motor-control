@@ -1,0 +1,73 @@
+{
+  "motors": [
+    {
+      "id": 1,
+      "name": "hip_abduction_right",
+      "joint_type": "hip",
+      "dof": "abduction",
+      "side": "right",
+      "discovery_params": {
+        "torque_threshold": 0.5,
+        "creep_velocity": 0.15,
+        "max_exploration_time": 15.0
+      },
+      "control_params": {
+        "default_kp": 20.0,
+        "default_kd": 1.0
+      },
+      "starting_position_deg": 0.0,
+      "notes": "0\u00b0 = leg hanging straight down. Positive = leg out to side, Negative = leg toward center",
+      "position_offset_deg": 36.16
+    },
+    {
+      "id": 2,
+      "name": "hip_flexion_right",
+      "joint_type": "hip",
+      "dof": "flexion",
+      "side": "right",
+      "discovery_params": {
+        "torque_threshold": 0.5,
+        "creep_velocity": 0.15,
+        "max_exploration_time": 15.0
+      },
+      "control_params": {
+        "default_kp": 20.0,
+        "default_kd": 1.0
+      },
+      "starting_position_deg": 0.0,
+      "notes": "Negative = leg angled back, 0\u00b0 = vertical, Positive = leg forward",
+      "position_offset_deg": 93.34
+    }
+  ],
+  "can_interface": {
+    "channel": "can0",
+    "bitrate": 1000000
+  },
+  "safety": {
+    "safety_margin_deg": 5.0,
+    "max_sequential_failures": 2
+  },
+  "poses": {
+    "standing": {
+      "description": "Natural standing pose with leg hanging",
+      "positions": {
+        "hip_abduction_right": 0.0,
+        "hip_flexion_right": 0.0
+      }
+    },
+    "ready": {
+      "description": "Ready position - slightly forward",
+      "positions": {
+        "hip_abduction_right": 5.0,
+        "hip_flexion_right": 15.0
+      }
+    },
+    "retracted": {
+      "description": "Leg pulled back and in",
+      "positions": {
+        "hip_abduction_right": -5.0,
+        "hip_flexion_right": -30.0
+      }
+    }
+  }
+}

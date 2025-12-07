@@ -57,7 +57,7 @@ class CubeMarsDriver(MotorDriver):
         driver.close()
     """
     
-    def __init__(self, motor_id=1, can_channel='can0', bitrate=1000000):
+    def __init__(self, motor_id=1, can_channel='can0', bitrate=1000000, position_offset_deg=0.0):
         """
         Initialize CubeMars motor driver.
         
@@ -65,12 +65,18 @@ class CubeMarsDriver(MotorDriver):
             motor_id: Motor CAN ID (1-32)
             can_channel: CAN interface name (default: 'can0')
             bitrate: CAN bus bitrate in bits/sec (default: 1000000 = 1 Mbps)
+            position_offset_deg: Position offset in degrees (default: 0.0)
+                Software offset to translate between motor positions and logical positions.
+                Example: If motor reads 41.10° at your desired logical zero,
+                         set position_offset_deg=41.10
         
         Note: The bitrate must match what you configured using:
               sudo ip link set can0 type can bitrate 1000000
         """
+        import math
         self.motor_id = motor_id
         self.can_channel = can_channel
+        self.position_offset_rad = math.radians(position_offset_deg)
         
         # Motor physical limits for AK40-10
         # These define the motor's safe operating envelope
@@ -90,7 +96,8 @@ class CubeMarsDriver(MotorDriver):
         # a nice abstraction over Linux SocketCAN
         try:
             self.bus = can.interface.Bus(channel=can_channel, bustype='socketcan')
-            print(f"[CubeMars-{motor_id}] Connected to {can_channel}")
+            offset_msg = f" (offset: {position_offset_deg:.2f}°)" if position_offset_deg != 0.0 else ""
+            print(f"[CubeMars-{motor_id}] Connected to {can_channel}{offset_msg}")
         except Exception as e:
             print(f"[CubeMars-{motor_id}] Error connecting to CAN: {e}")
             raise
@@ -121,15 +128,18 @@ class CubeMarsDriver(MotorDriver):
         - Low kd (0.5-2) for smooth, natural movement
         
         Args:
-            position: Target position in radians
+            position: Target position in radians (logical coordinates)
             velocity: Target velocity in rad/s
             kp: Position gain (0-500)
             kd: Damping gain (0-5)
             torque: Feed-forward torque in Nm
         """
+        # Apply offset to convert logical position to motor position
+        motor_position = position + self.position_offset_rad
+        
         # Clamp all values to motor's safe limits
         # This is a safety feature - prevents sending dangerous commands
-        position = max(self.P_MIN, min(self.P_MAX, position))
+        position = max(self.P_MIN, min(self.P_MAX, motor_position))
         velocity = max(self.V_MIN, min(self.V_MAX, velocity))
         kp = max(self.KP_MIN, min(self.KP_MAX, kp))
         kd = max(self.KD_MIN, min(self.KD_MAX, kd))
@@ -210,17 +220,20 @@ class CubeMarsDriver(MotorDriver):
         t_int = ((msg.data[4] & 0xF) << 8) | msg.data[5]
         
         # Convert unsigned ints back to floats
-        position = self._uint_to_float(p_int, self.P_MIN, self.P_MAX, 16)
+        motor_position = self._uint_to_float(p_int, self.P_MIN, self.P_MAX, 16)
         velocity = self._uint_to_float(v_int, self.V_MIN, self.V_MAX, 12)
         torque = self._uint_to_float(t_int, self.T_MIN, self.T_MAX, 12)
         
+        # Apply offset to convert motor position to logical position
+        logical_position = motor_position - self.position_offset_rad
+        
         # Update state tracking
-        self.last_position = position
+        self.last_position = logical_position
         self.last_velocity = velocity
         self.last_torque = torque
         
         return {
-            'position': position,
+            'position': logical_position,
             'velocity': velocity,
             'torque': torque,
             'id': msg.arbitration_id
@@ -306,6 +319,65 @@ class CubeMarsDriver(MotorDriver):
         self.exit_motor_mode()
         self.bus.shutdown()
         print(f"[CubeMars-{self.motor_id}] Driver closed")
+    
+    @classmethod
+    def from_config(cls, motor_id, config_path=None):
+        """
+        Create driver from motor_config.json.
+        
+        This is a CLASS METHOD - you call it on the class, not an instance.
+        
+        Python note:
+        -----------
+        @classmethod means this method gets the class (cls) as first parameter,
+        not an instance (self). Useful for alternative constructors.
+        
+        Java equivalent:
+            public static CubeMarsDriver fromConfig(int motorId, String path) {
+                // Load config, create instance
+                return new CubeMarsDriver(...);
+            }
+        
+        Usage:
+            driver = CubeMarsDriver.from_config(motor_id=2)
+        
+        Args:
+            motor_id: Motor CAN ID to load config for
+            config_path: Path to motor_config.json (optional, uses default if None)
+        
+        Returns:
+            CubeMarsDriver: Configured driver instance with offset applied
+        """
+        import json
+        from pathlib import Path
+        
+        if config_path is None:
+            # Assume we're in motor_drivers/ directory, config is in ../../configs/
+            config_path = Path(__file__).parent.parent.parent / 'configs' / 'motor_config.json'
+        else:
+            config_path = Path(config_path)
+        
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # Find motor in config
+        motor_config = None
+        for m in config['motors']:
+            if m['id'] == motor_id:
+                motor_config = m
+                break
+        
+        if motor_config is None:
+            raise ValueError(f"Motor ID {motor_id} not found in config")
+        
+        offset = motor_config.get('position_offset_deg', 0.0)
+        can_channel = config['can_interface']['channel']
+        
+        return cls(
+            motor_id=motor_id,
+            can_channel=can_channel,
+            position_offset_deg=offset
+        )
     
     # ========================================================================
     # Internal Helper Methods
