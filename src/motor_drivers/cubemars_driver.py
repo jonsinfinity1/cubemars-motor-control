@@ -57,7 +57,7 @@ class CubeMarsDriver(MotorDriver):
         driver.close()
     """
     
-    def __init__(self, motor_id=1, can_channel='can0', bitrate=1000000, position_offset_deg=0.0):
+    def __init__(self, motor_id=1, can_channel='can0', bitrate=1000000, position_offset_deg=None):
         """
         Initialize CubeMars motor driver.
         
@@ -65,17 +65,40 @@ class CubeMarsDriver(MotorDriver):
             motor_id: Motor CAN ID (1-32)
             can_channel: CAN interface name (default: 'can0')
             bitrate: CAN bus bitrate in bits/sec (default: 1000000 = 1 Mbps)
-            position_offset_deg: Position offset in degrees (default: 0.0)
-                Software offset to translate between motor positions and logical positions.
-                Example: If motor reads 41.10° at your desired logical zero,
-                         set position_offset_deg=41.10
+            position_offset_deg: Position offset in degrees
+                - None (default): Auto-load from motor_config.json
+                - 0.0: Explicitly no offset (raw motor coordinates)
+                - <value>: Use this specific offset
         
         Note: The bitrate must match what you configured using:
               sudo ip link set can0 type can bitrate 1000000
         """
         import math
+        import json
+        from pathlib import Path
+        
         self.motor_id = motor_id
         self.can_channel = can_channel
+        
+        # Auto-load offset from config if not specified
+        if position_offset_deg is None:
+            try:
+                config_path = Path(__file__).parent.parent.parent / 'configs' / 'motor_config.json'
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                
+                # Find motor in config
+                for m in config['motors']:
+                    if m['id'] == motor_id:
+                        position_offset_deg = m.get('position_offset_deg', 0.0)
+                        break
+                else:
+                    # Motor not in config, use 0.0
+                    position_offset_deg = 0.0
+            except:
+                # Config file not found or other error, use 0.0
+                position_offset_deg = 0.0
+        
         self.position_offset_rad = math.radians(position_offset_deg)
         
         # Motor physical limits for AK40-10

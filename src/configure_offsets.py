@@ -55,7 +55,8 @@ def configure_offset_for_motor(motor_id, motor_name, config):
     print("-" * 70)
     
     try:
-        driver = CubeMarsDriver(motor_id=motor_id)
+        # Explicitly use NO offset (we want raw motor positions)
+        driver = CubeMarsDriver(motor_id=motor_id, position_offset_deg=0.0)
         driver.flush_buffer()
         driver.enter_motor_mode()
         time.sleep(0.3)

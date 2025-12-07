@@ -22,8 +22,8 @@ def main():
     - Safety margins
     """
     
-    # Create the motor driver (with offset from config)
-    driver = CubeMarsDriver.from_config(motor_id=1)
+    # Create the motor driver
+    driver = CubeMarsDriver(motor_id=1)
     
     # Create the high-level Joint interface
     # This wraps the driver and provides convenient high-level operations

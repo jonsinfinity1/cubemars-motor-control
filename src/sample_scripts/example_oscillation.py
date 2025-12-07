@@ -21,7 +21,7 @@ def main():
     - Offset oscillations (not centered at zero)
     - Interactive torque reversal
     """
-    driver = CubeMarsDriver.from_config(motor_id=1)
+    driver = CubeMarsDriver(motor_id=1)
     
     try:
         # Initialize motor

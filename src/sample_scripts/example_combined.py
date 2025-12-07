@@ -21,8 +21,8 @@ def main():
     work together to provide safe, intelligent motion control.
     """
     
-    # Create the motor driver (with offset from config)
-    driver = CubeMarsDriver.from_config(motor_id=2)
+    # Create the motor driver
+    driver = CubeMarsDriver(motor_id=2)
     
     # Create the high-level Joint interface
     joint = Joint(
