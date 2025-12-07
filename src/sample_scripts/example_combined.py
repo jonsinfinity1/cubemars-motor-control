@@ -22,7 +22,7 @@ def main():
     """
     
     # Create the motor driver
-    driver = CubeMarsDriver(motor_id=1)
+    driver = CubeMarsDriver(motor_id=2)
     
     # Create the high-level Joint interface
     joint = Joint(
