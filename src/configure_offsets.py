@@ -80,6 +80,16 @@ def configure_offset_for_motor(motor_id, motor_name, config):
         
         current_position = feedback['position']
         motor_position_deg = math.degrees(current_position)
+        
+        # SAFETY: Validate position is within motor's physical range
+        # AK40-10: ±12.5 rad = ±716°
+        if abs(motor_position_deg) > 720.0:
+            print(f"\n⚠️  ERROR: Motor position {motor_position_deg:.2f}° is outside valid range!")
+            print(f"    AK40-10 motors have ±716° absolute range.")
+            print(f"    This reading is likely an error. Aborting offset configuration.")
+            driver.close()
+            return None
+        
         print(f"\nMotor's current raw position: {motor_position_deg:.2f}°")
         
         # SECOND COMMAND: Hold current position with low gains
@@ -113,6 +123,17 @@ def configure_offset_for_motor(motor_id, motor_name, config):
     
     print("\nSTEP 3: Configure offset")
     print("-" * 70)
+    
+    # SAFETY: Additional validation before saving
+    if abs(motor_position_deg) > 360.0:
+        print(f"\n⚠️  WARNING: Offset {motor_position_deg:.2f}° is unusually large (>360°)")
+        print(f"    This means the motor is more than one full rotation from zero.")
+        print(f"    This is possible but uncommon. Please verify this is correct.")
+        response = input("\nAre you CERTAIN this offset is correct? (yes/no): ")
+        if response.lower() not in ['yes', 'y']:
+            print("Offset not applied. Try re-positioning the motor closer to zero.")
+            return None
+    
     print(f"\nOffset will be: {motor_position_deg:.2f}°")
     print(f"\nThis means:")
     print(f"  Motor reads:  {motor_position_deg:.2f}° → Software sees: 0.00°")

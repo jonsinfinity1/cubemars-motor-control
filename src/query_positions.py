@@ -37,12 +37,12 @@ def query_motor_position(motor_id, motor_name):
         driver.enter_motor_mode()
         time.sleep(0.2)
         
-        # Query with very low gains (basically just reading)
+        # Query with ZERO gains - just reading, don't move!
         driver.send_command(
-            position=0.0,
+            position=0.0,     # Ignored when kp=0
             velocity=0.0,
-            kp=0.1,  # Very low - won't try to move
-            kd=0.1,
+            kp=0,             # ZERO - just reading
+            kd=0,             # ZERO - just reading
             torque=0.0
         )
         time.sleep(0.1)

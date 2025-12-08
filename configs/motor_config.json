@@ -17,7 +17,7 @@
       },
       "starting_position_deg": 0.0,
       "notes": "0\u00b0 = leg hanging straight down. Positive = leg out to side, Negative = leg toward center",
-      "position_offset_deg": 36.16
+      "position_offset_deg": -36.21
     },
     {
       "id": 2,
@@ -36,7 +36,7 @@
       },
       "starting_position_deg": 0.0,
       "notes": "Negative = leg angled back, 0\u00b0 = vertical, Positive = leg forward",
-      "position_offset_deg": 93.34
+      "position_offset_deg": 309.81
     }
   ],
   "can_interface": {

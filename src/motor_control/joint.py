@@ -130,18 +130,19 @@ class Joint:
         """
         Update internal state from motor feedback.
         
-        Uses very low gains to avoid commanding movement - we're just
+        Uses ZERO gains to avoid any movement - we're just
         querying the current position.
         
         Python Note: Leading underscore indicates this is "private" - meant
         for internal use only. It's a convention, not enforced like Java's private.
         """
-        # Use very low gains to avoid sudden movement when querying position
+        # CRITICAL: Use kp=0, kd=0, torque=0 to query position WITHOUT moving!
+        # The position parameter is ignored when gains are zero.
         self.driver.send_command(
-            position=self.current_position,
+            position=0,      # Ignored when kp=0
             velocity=0.0,
-            kp=0.1,  # Very low stiffness - just querying
-            kd=0.1,  # Very low damping
+            kp=0,            # ZERO - don't try to move!
+            kd=0,            # ZERO - don't try to move!
             torque=0.0
         )
         time.sleep(0.05)

@@ -99,6 +99,16 @@ class CubeMarsDriver(MotorDriver):
                 # Config file not found or other error, use 0.0
                 position_offset_deg = 0.0
         
+        # SAFETY: Validate offset is within reasonable range
+        # AK40-10 motors have ~±12.5 rad (±716°) absolute range
+        # Offsets should typically be within ±360° (one full rotation)
+        # Anything beyond ±400° is almost certainly an error
+        if abs(position_offset_deg) > 400.0:
+            print(f"⚠️  WARNING: Motor {motor_id} offset {position_offset_deg:.2f}° is dangerously large!")
+            print(f"    This is likely a configuration error. Using 0.0° instead.")
+            print(f"    Please re-run configure_offsets.py to set correct offset.")
+            position_offset_deg = 0.0
+        
         self.position_offset_rad = math.radians(position_offset_deg)
         
         # Motor physical limits for AK40-10
@@ -208,6 +218,10 @@ class CubeMarsDriver(MotorDriver):
         After sending a command, the motor responds with its current state.
         This method waits for that response and decodes it.
         
+        IMPORTANT: This method filters responses to only return feedback
+        from THIS motor (matching self.motor_id). Other motors' responses
+        are discarded.
+        
         Returns:
             dict: {
                 'position': float (radians),
@@ -223,44 +237,58 @@ class CubeMarsDriver(MotorDriver):
         Adding processing time, responses typically arrive within 1-2 ms.
         A 100ms timeout (default) is very conservative.
         """
-        msg = self.bus.recv(timeout=timeout)
+        import time
+        start_time = time.time()
         
-        if msg is None:
-            return None
-        
-        if len(msg.data) < 6:
-            # Malformed response
-            return None
-        
-        # Decode motor response
-        # Response layout (6 bytes):
-        #   0: Motor ID
-        #   1-2: Position (16 bits)
-        #   3-4: Velocity (12 bits)
-        #   4-5: Torque (12 bits)
-        p_int = (msg.data[1] << 8) | msg.data[2]
-        v_int = (msg.data[3] << 4) | (msg.data[4] >> 4)
-        t_int = ((msg.data[4] & 0xF) << 8) | msg.data[5]
-        
-        # Convert unsigned ints back to floats
-        motor_position = self._uint_to_float(p_int, self.P_MIN, self.P_MAX, 16)
-        velocity = self._uint_to_float(v_int, self.V_MIN, self.V_MAX, 12)
-        torque = self._uint_to_float(t_int, self.T_MIN, self.T_MAX, 12)
-        
-        # Apply offset to convert motor position to logical position
-        logical_position = motor_position - self.position_offset_rad
-        
-        # Update state tracking
-        self.last_position = logical_position
-        self.last_velocity = velocity
-        self.last_torque = torque
-        
-        return {
-            'position': logical_position,
-            'velocity': velocity,
-            'torque': torque,
-            'id': msg.arbitration_id
-        }
+        while True:
+            remaining_timeout = timeout - (time.time() - start_time)
+            if remaining_timeout <= 0:
+                return None
+            
+            msg = self.bus.recv(timeout=remaining_timeout)
+            
+            if msg is None:
+                return None
+            
+            if len(msg.data) < 6:
+                # Malformed response, try again
+                continue
+            
+            # Check if this response is from OUR motor
+            response_motor_id = msg.data[0]
+            if response_motor_id != self.motor_id:
+                # This response is from a different motor, discard and keep reading
+                continue
+            
+            # Decode motor response
+            # Response layout (6 bytes):
+            #   0: Motor ID
+            #   1-2: Position (16 bits)
+            #   3-4: Velocity (12 bits)
+            #   4-5: Torque (12 bits)
+            p_int = (msg.data[1] << 8) | msg.data[2]
+            v_int = (msg.data[3] << 4) | (msg.data[4] >> 4)
+            t_int = ((msg.data[4] & 0xF) << 8) | msg.data[5]
+            
+            # Convert unsigned ints back to floats
+            motor_position = self._uint_to_float(p_int, self.P_MIN, self.P_MAX, 16)
+            velocity = self._uint_to_float(v_int, self.V_MIN, self.V_MAX, 12)
+            torque = self._uint_to_float(t_int, self.T_MIN, self.T_MAX, 12)
+            
+            # Apply offset to convert motor position to logical position
+            logical_position = motor_position - self.position_offset_rad
+            
+            # Update state tracking
+            self.last_position = logical_position
+            self.last_velocity = velocity
+            self.last_torque = torque
+            
+            return {
+                'position': logical_position,
+                'velocity': velocity,
+                'torque': torque,
+                'id': response_motor_id
+            }
     
     def enter_motor_mode(self):
         """

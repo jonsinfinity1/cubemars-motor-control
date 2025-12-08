@@ -76,14 +76,75 @@ def move_and_hold(config):
         
         time.sleep(0.5)
         
-        # Move all to starting positions
+        # Move all to starting positions SIMULTANEOUSLY
         print("\n" + "=" * 70)
         print("Moving to starting positions...")
         print("=" * 70 + "\n")
         
-        for motor_id, target_pos in starting_positions.items():
-            joints[motor_id].move_to(target_pos, duration=3.0, verbose=False)
-            print(f"{joints[motor_id].name}: {target_pos:.1f}°")
+        # Start all movements at the same time
+        import math
+        start_time = time.time()
+        duration = 3.0
+        
+        # Read all current positions
+        start_positions = {}
+        for motor_id, joint in joints.items():
+            joint._update_state()
+            start_positions[motor_id] = joint.current_position
+            target_deg = starting_positions[motor_id]
+            current_deg = math.degrees(start_positions[motor_id])
+            print(f"{joint.name}:")
+            print(f"  Current: {current_deg:.2f}°")
+            print(f"  Target:  {target_deg:.2f}°")
+            print(f"  Distance: {abs(current_deg - target_deg):.2f}°")
+        
+        # Convert target positions to radians
+        target_positions_rad = {motor_id: math.radians(deg) 
+                                for motor_id, deg in starting_positions.items()}
+        
+        print("\nMoving all motors simultaneously...")
+        
+        # Simultaneous S-curve movement
+        while True:
+            elapsed = time.time() - start_time
+            
+            if elapsed >= duration:
+                # Final positions
+                for motor_id, joint in joints.items():
+                    target_rad = target_positions_rad[motor_id]
+                    joint.driver.send_command(
+                        position=target_rad,
+                        velocity=0.0,
+                        kp=joint.default_kp,
+                        kd=joint.default_kd,
+                        torque=0.0
+                    )
+                    feedback = joint.driver.read_feedback(timeout=0.01)
+                    if feedback:
+                        joint.current_position = feedback['position']
+                break
+            else:
+                # S-curve trajectory for all motors
+                progress = 0.5 - 0.5 * math.cos((elapsed / duration) * math.pi)
+                
+                for motor_id, joint in joints.items():
+                    start_pos = start_positions[motor_id]
+                    target_rad = target_positions_rad[motor_id]
+                    position = start_pos + (target_rad - start_pos) * progress
+                    
+                    joint.driver.send_command(
+                        position=position,
+                        velocity=0.0,
+                        kp=joint.default_kp,
+                        kd=joint.default_kd,
+                        torque=0.0
+                    )
+                    
+                    feedback = joint.driver.read_feedback(timeout=0.01)
+                    if feedback:
+                        joint.current_position = feedback['position']
+            
+            time.sleep(0.01)  # 100Hz control loop
         
         print(f"\n✓ All motors at starting positions")
         
@@ -93,12 +154,12 @@ def move_and_hold(config):
         actual_positions = {}
         
         for motor_id, joint in joints.items():
-            # Query position with low gains (don't command movement)
+            # Query position with ZERO gains (don't move!)
             joint.driver.send_command(
-                position=joint.current_position,
+                position=0,       # Ignored when kp=0
                 velocity=0.0,
-                kp=0.1,
-                kd=0.1,
+                kp=0,             # ZERO - just reading
+                kd=0,             # ZERO - just reading
                 torque=0.0
             )
             time.sleep(0.05)
