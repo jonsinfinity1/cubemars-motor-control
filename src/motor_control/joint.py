@@ -92,9 +92,10 @@ class Joint:
         self.default_kd = kd
         
         # Current state tracking
-        self.current_position = 0.0  # radians
-        self.current_velocity = 0.0  # rad/s
-        self.current_torque = 0.0    # Nm
+        # IMPORTANT: None means "unknown" - we must read before using!
+        self.current_position = None  # radians (None until first read)
+        self.current_velocity = 0.0   # rad/s
+        self.current_torque = 0.0     # Nm
         self.is_initialized = False
         
         # Discovered range (None until discovery is run)
@@ -109,20 +110,58 @@ class Joint:
         """
         Initialize the joint for operation.
         
-        This:
-        1. Clears any stale CAN messages
-        2. Enables motor control mode
-        3. Reads initial position
+        CRITICAL SAFETY: This uses a careful sequence to prevent motor jumps:
+        1. Clear stale CAN messages
+        2. Enable motor mode
+        3. IMMEDIATELY send zero-gain command to read position (no movement)
+        4. Validate we got a valid position before proceeding
+        
+        The key insight: MIT mode commands always include a position target.
+        If we send ANY command with non-zero kp before knowing the actual
+        position, the motor will jump to whatever position we specified.
         
         Must be called before any other operations.
         """
         print(f"[{self.name}] Initializing...")
         self.driver.flush_buffer()
         self.driver.enter_motor_mode()
-        time.sleep(0.5)
         
-        # Read initial position
-        self._update_state()
+        # CRITICAL: Immediately read position with ZERO gains
+        # This prevents any movement while we synchronize state
+        time.sleep(0.1)  # Brief settle time for motor mode transition
+        
+        # Try multiple times to get a valid position reading
+        position_read_success = False
+        for attempt in range(5):
+            # Send zero-gain command - motor won't move, just responds with state
+            self.driver.send_command(
+                position=0.0,    # Ignored when kp=0
+                velocity=0.0,
+                kp=0.0,          # ZERO - no position control
+                kd=0.0,          # ZERO - no damping
+                torque=0.0       # ZERO - no torque
+            )
+            time.sleep(0.05)
+            
+            feedback = self.driver.read_feedback(timeout=0.1)
+            if feedback and 'position' in feedback:
+                self.current_position = feedback['position']
+                self.current_velocity = feedback.get('velocity', 0.0)
+                self.current_torque = feedback.get('torque', 0.0)
+                position_read_success = True
+                break
+            else:
+                print(f"[{self.name}] Position read attempt {attempt + 1}/5 failed, retrying...")
+                time.sleep(0.1)
+        
+        if not position_read_success:
+            # SAFETY: Cannot proceed without knowing current position
+            self.driver.exit_motor_mode()
+            raise RuntimeError(
+                f"[{self.name}] SAFETY ABORT: Failed to read motor position after 5 attempts. "
+                f"Cannot safely initialize without knowing current position."
+            )
+        
         self.is_initialized = True
         print(f"[{self.name}] Initialized at {math.degrees(self.current_position):.2f}°")
     
@@ -133,22 +172,33 @@ class Joint:
         Uses ZERO gains to avoid any movement - we're just
         querying the current position.
         
+        Returns:
+            bool: True if state was successfully updated, False otherwise
+        
+        IMPORTANT: Callers should check the return value! If this returns
+        False, self.current_position may be stale or None.
+        
         Python Note: Leading underscore indicates this is "private" - meant
         for internal use only. It's a convention, not enforced like Java's private.
         """
+        # CRITICAL: Flush any stale messages before reading
+        # This is essential when multiple motors share the same CAN bus,
+        # as each driver's buffer receives ALL messages on the bus
+        self.driver.flush_buffer()
+        
         # CRITICAL: Use kp=0, kd=0, torque=0 to query position WITHOUT moving!
         # The position parameter is ignored when gains are zero.
         self.driver.send_command(
-            position=0,      # Ignored when kp=0
+            position=0.0,    # Ignored when kp=0
             velocity=0.0,
-            kp=0,            # ZERO - don't try to move!
-            kd=0,            # ZERO - don't try to move!
+            kp=0.0,          # ZERO - don't try to move!
+            kd=0.0,          # ZERO - don't try to move!
             torque=0.0
         )
         time.sleep(0.05)
         
         feedback = self.driver.read_feedback(timeout=0.1)
-        if feedback:
+        if feedback and 'position' in feedback:
             self.current_position = feedback['position']
             self.current_velocity = feedback.get('velocity', 0.0)
             self.current_torque = feedback.get('torque', 0.0)
@@ -156,12 +206,18 @@ class Joint:
         return False
     
     def get_position_degrees(self):
-        """Get current position in degrees"""
+        """Get current position in degrees. Returns None if position unknown."""
+        if self.current_position is None:
+            return None
         return math.degrees(self.current_position)
     
     def get_position_radians(self):
-        """Get current position in radians"""
+        """Get current position in radians. Returns None if position unknown."""
         return self.current_position
+    
+    # Control loop timing constants
+    CONTROL_RATE_HZ = 100       # Target loop frequency
+    CONTROL_PERIOD = 1.0 / CONTROL_RATE_HZ  # 0.01 seconds per iteration
     
     def move_to(self, target_deg, duration=2.0, kp=None, kd=None, verbose=True):
         """
@@ -185,6 +241,15 @@ class Joint:
         We use a cosine-based S-curve: position = 0.5 - 0.5*cos(π*t)
         This gives the classic S-shaped velocity profile.
         
+        Real-Time Control:
+        -----------------
+        This method uses deadline-based timing rather than sleep-based timing.
+        Instead of "do work, then sleep for 10ms", we calculate "when should
+        the next iteration start" and sleep until that exact time.
+        
+        This ensures consistent loop timing regardless of how long the
+        processing takes, which is critical for smooth motion.
+        
         Args:
             target_deg: Target position in degrees
             duration: Time to complete move (seconds)
@@ -205,18 +270,42 @@ class Joint:
         # CRITICAL: Read actual position before starting move
         # This ensures we start from where the motor actually is,
         # not from stale state that might be wrong
-        self._update_state()
+        if not self._update_state():
+            raise RuntimeError(
+                f"[{self.name}] SAFETY ABORT: Failed to read current position. "
+                f"Cannot safely move without knowing starting position."
+            )
+        
+        # Double-check we have a valid position (not None)
+        if self.current_position is None:
+            raise RuntimeError(
+                f"[{self.name}] SAFETY ABORT: Current position is unknown. "
+                f"This should not happen after successful _update_state()."
+            )
         
         if verbose:
             print(f"[{self.name}] Moving from {self.get_position_degrees():.2f}° "
                   f"to {target_deg:.2f}° over {duration:.1f}s")
         
         start_position = self.current_position
-        start_time = time.time()
+        
+        # Timing: use perf_counter for high-precision timing
+        # perf_counter is monotonic and has higher resolution than time.time()
+        loop_start = time.perf_counter()
+        next_deadline = loop_start
+        
+        # Timing statistics (for diagnostics)
+        overrun_count = 0
+        max_overrun = 0.0
+        iteration_count = 0
+        last_print_time = loop_start
         
         while True:
-            elapsed = time.time() - start_time
+            iteration_count += 1
+            now = time.perf_counter()
+            elapsed = now - loop_start
             
+            # Calculate trajectory position
             if elapsed >= duration:
                 position = target_rad
                 done = True
@@ -227,6 +316,7 @@ class Joint:
                 position = start_position + (target_rad - start_position) * progress
                 done = False
             
+            # Send command to motor
             self.driver.send_command(
                 position=position,
                 velocity=0.0,
@@ -235,22 +325,50 @@ class Joint:
                 torque=0.0
             )
             
-            feedback = self.driver.read_feedback(timeout=0.01)
+            # Read feedback (with short timeout to not block too long)
+            feedback = self.driver.read_feedback(timeout=0.005)
             if feedback:
                 self.current_position = feedback['position']
                 self.current_velocity = feedback.get('velocity', 0.0)
                 self.current_torque = feedback.get('torque', 0.0)
-                
-                if verbose and int(elapsed * 2) % 1 == 0:  # Print every 0.5s
-                    print(f"  [{self.name}] Position: {self.get_position_degrees():6.2f}°")
+            
+            # Verbose output (throttled to ~2Hz to not spam)
+            if verbose and (now - last_print_time) >= 0.5:
+                print(f"  [{self.name}] Position: {self.get_position_degrees():6.2f}°")
+                last_print_time = now
             
             if done:
                 break
             
-            time.sleep(0.01)  # 100Hz control loop
+            # Deadline-based timing:
+            # Calculate when the next iteration SHOULD start
+            next_deadline += self.CONTROL_PERIOD
+            sleep_time = next_deadline - time.perf_counter()
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                # Overrun: loop took longer than budget
+                overrun_count += 1
+                overrun_amount = -sleep_time
+                max_overrun = max(max_overrun, overrun_amount)
+                # Reset deadline to avoid cascading overruns
+                next_deadline = time.perf_counter()
+        
+        # Final position command (hold at target)
+        self.driver.send_command(
+            position=target_rad,
+            velocity=0.0,
+            kp=kp,
+            kd=kd,
+            torque=0.0
+        )
         
         if verbose:
             print(f"[{self.name}] Reached {self.get_position_degrees():.2f}°")
+            if overrun_count > 0:
+                print(f"  Timing: {overrun_count}/{iteration_count} overruns "
+                      f"(max: {max_overrun*1000:.1f}ms)")
         
         return True
     
@@ -348,6 +466,10 @@ class Joint:
         
         return (min_deg, max_deg)
     
+    # Exploration timing (slower than control loop for gentle movement)
+    EXPLORE_RATE_HZ = 20
+    EXPLORE_PERIOD = 1.0 / EXPLORE_RATE_HZ  # 0.05 seconds per iteration
+    
     def _explore_direction(self, direction, torque_threshold, creep_velocity,
                           max_exploration_time, verbose):
         """
@@ -356,6 +478,9 @@ class Joint:
         Internal helper method for discover_range(). Uses very compliant
         control (low kp/kd) so the motor can "feel" the stop without
         fighting it aggressively.
+        
+        Uses deadline-based timing at 20Hz (slower than normal control)
+        for gentle, consistent exploration speed.
         
         Args:
             direction: 1 for positive, -1 for negative
@@ -367,7 +492,6 @@ class Joint:
         Returns:
             float: Position where stop was detected (radians)
         """
-        start_time = time.time()
         stop_detected = False
         stop_position = None
         
@@ -376,7 +500,19 @@ class Joint:
         kp = 5.0   # Low stiffness
         kd = 0.5   # Light damping
         
-        while not stop_detected and (time.time() - start_time) < max_exploration_time:
+        # Timing setup
+        loop_start = time.perf_counter()
+        next_deadline = loop_start
+        last_print_time = loop_start
+        
+        while not stop_detected:
+            now = time.perf_counter()
+            elapsed = now - loop_start
+            
+            # Safety timeout
+            if elapsed >= max_exploration_time:
+                break
+            
             # Command a slow velocity in the exploration direction
             self.driver.send_command(
                 position=self.current_position + (direction * 0.1),
@@ -401,11 +537,18 @@ class Joint:
                     if verbose:
                         print(f"  Stop detected at {self.get_position_degrees():.2f}° "
                               f"(Torque: {self.current_torque:.3f} Nm)")
-                elif verbose and int((time.time() - start_time) * 4) % 1 == 0:
+                elif verbose and (now - last_print_time) >= 0.25:
                     print(f"  Position: {self.get_position_degrees():6.2f}°  "
                           f"Torque: {self.current_torque:5.3f} Nm")
+                    last_print_time = now
             
-            time.sleep(0.05)  # 20Hz exploration (slow and gentle)
+            # Deadline-based timing at 20Hz
+            next_deadline += self.EXPLORE_PERIOD
+            sleep_time = next_deadline - time.perf_counter()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                next_deadline = time.perf_counter()  # Reset on overrun
         
         if not stop_detected:
             if verbose:
@@ -419,14 +562,21 @@ class Joint:
         if verbose:
             print(f"  Backing off 2° from stop...")
         
-        # Quick backoff movement
+        # Quick backoff movement with deadline-based timing
         start_pos = self.current_position
+        backoff_start = time.perf_counter()
+        next_deadline = backoff_start
+        
         for i in range(20):
-            progress = i / 20.0
+            progress = (i + 1) / 20.0
             pos = start_pos + (safe_position - start_pos) * progress
             self.driver.send_command(pos, 0.0, 10.0, 0.8, 0.0)
             self.driver.read_feedback(timeout=0.01)
-            time.sleep(0.05)
+            
+            next_deadline += self.EXPLORE_PERIOD
+            sleep_time = next_deadline - time.perf_counter()
+            if sleep_time > 0:
+                time.sleep(sleep_time)
         
         self.current_position = safe_position
         return safe_position
@@ -469,6 +619,8 @@ class Joint:
         This actively maintains the current position using impedance control.
         The joint will resist external forces (how much depends on kp/kd).
         
+        Uses deadline-based timing at 100Hz for consistent control.
+        
         Useful for:
         - Testing impedance control tuning
         - Maintaining a specific posture
@@ -489,7 +641,17 @@ class Joint:
         kd = kd or self.default_kd
         
         # Read actual position before holding
-        self._update_state()
+        if not self._update_state():
+            raise RuntimeError(
+                f"[{self.name}] SAFETY ABORT: Failed to read current position. "
+                f"Cannot safely hold without knowing current position."
+            )
+        
+        if self.current_position is None:
+            raise RuntimeError(
+                f"[{self.name}] SAFETY ABORT: Current position is unknown."
+            )
+        
         hold_position = self.current_position
         
         print(f"[{self.name}] Holding position at {self.get_position_degrees():.2f}°")
@@ -498,15 +660,21 @@ class Joint:
         else:
             print(f"  Press Ctrl+C to stop")
         
-        start_time = time.time()
-        last_print = start_time
+        # Timing setup
+        loop_start = time.perf_counter()
+        next_deadline = loop_start
+        last_print_time = loop_start
+        overrun_count = 0
+        iteration_count = 0
         
         try:
             while True:
-                current_time = time.time()
+                iteration_count += 1
+                now = time.perf_counter()
+                elapsed = now - loop_start
                 
                 # Check if duration has elapsed
-                if duration and (current_time - start_time) >= duration:
+                if duration and elapsed >= duration:
                     break
                 
                 self.driver.send_command(
@@ -517,19 +685,33 @@ class Joint:
                     torque=0.0
                 )
                 
-                feedback = self.driver.read_feedback(timeout=0.01)
+                feedback = self.driver.read_feedback(timeout=0.005)
                 if feedback:
                     self.current_position = feedback['position']
                     self.current_torque = feedback.get('torque', 0.0)
-                    
-                    if (current_time - last_print) >= print_interval:
-                        error_deg = math.degrees(hold_position - self.current_position)
-                        print(f"  Position: {self.get_position_degrees():6.2f}°  "
-                              f"Error: {error_deg:+5.2f}°  "
-                              f"Torque: {self.current_torque:5.3f} Nm")
-                        last_print = current_time
                 
-                time.sleep(0.01)  # 100Hz control loop
+                # Print status at specified interval
+                if (now - last_print_time) >= print_interval:
+                    error_deg = math.degrees(hold_position - self.current_position)
+                    print(f"  Position: {self.get_position_degrees():6.2f}°  "
+                          f"Error: {error_deg:+5.2f}°  "
+                          f"Torque: {self.current_torque:5.3f} Nm")
+                    if overrun_count > 0:
+                        print(f"  Timing: {overrun_count}/{iteration_count} overruns")
+                    last_print_time = now
+                    # Reset counters each print cycle
+                    overrun_count = 0
+                    iteration_count = 0
+                
+                # Deadline-based timing
+                next_deadline += self.CONTROL_PERIOD
+                sleep_time = next_deadline - time.perf_counter()
+                
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+                else:
+                    overrun_count += 1
+                    next_deadline = time.perf_counter()  # Reset on overrun
                 
         except KeyboardInterrupt:
             print(f"\n[{self.name}] Hold interrupted")
@@ -542,8 +724,17 @@ class Joint:
         2. Closes driver
         3. Marks as not initialized
         
+        Safe to call multiple times - subsequent calls are no-ops.
         Always call this before program exit!
         """
+        if not self.is_initialized:
+            # Already shut down, nothing to do
+            return
+        
         print(f"[{self.name}] Shutting down...")
-        self.driver.close()
+        try:
+            self.driver.close()
+        except Exception as e:
+            # Driver may already be closed - that's fine
+            pass
         self.is_initialized = False

@@ -297,16 +297,76 @@ class CubeMarsDriver(MotorDriver):
         Sends the "enter motor mode" command (0xFFFFFFFFFFFFFFFC).
         After this, the motor will respond to control commands.
         
-        Before this command, the motor is in a safe idle state with zero torque.
+        CRITICAL: The motor firmware may remember the last position target
+        and apply it immediately when motor mode is enabled. We need to
+        send zero-gain commands as fast as possible to prevent jumping.
         """
-        msg = can.Message(
+        # Prepare the zero-gain command BEFORE entering motor mode
+        # so we can send it with minimal delay
+        zero_gain_data = self._encode_command(
+            position=0.0,
+            velocity=0.0,
+            kp=0.0,
+            kd=0.0,
+            torque=0.0
+        )
+        zero_gain_msg = can.Message(
+            arbitration_id=self.motor_id,
+            data=zero_gain_data,
+            is_extended_id=False
+        )
+        
+        # Enter motor mode
+        enter_msg = can.Message(
             arbitration_id=self.motor_id,
             data=[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC],
             is_extended_id=False
         )
-        self.bus.send(msg)
+        self.bus.send(enter_msg)
+        
+        # IMMEDIATELY send zero-gain command - no delay!
+        # Send it multiple times to ensure motor receives it
+        for _ in range(3):
+            self.bus.send(zero_gain_msg)
+        
         print(f"[CubeMars-{self.motor_id}] Entering motor mode")
-        time.sleep(0.1)  # Give motor time to transition
+        time.sleep(0.05)  # Brief settle time after commands sent
+    
+    def _encode_command(self, position, velocity, kp, kd, torque):
+        """
+        Encode command parameters into CAN data bytes.
+        
+        This is separated out so we can pre-build commands for
+        time-critical sequences.
+        
+        Returns:
+            bytes: 8-byte CAN frame data
+        """
+        # Clamp values to limits
+        position = max(self.P_MIN, min(self.P_MAX, position))
+        velocity = max(self.V_MIN, min(self.V_MAX, velocity))
+        kp = max(self.KP_MIN, min(self.KP_MAX, kp))
+        kd = max(self.KD_MIN, min(self.KD_MAX, kd))
+        torque = max(self.T_MIN, min(self.T_MAX, torque))
+        
+        # Convert to unsigned ints
+        p_int = self._float_to_uint(position, self.P_MIN, self.P_MAX, 16)
+        v_int = self._float_to_uint(velocity, self.V_MIN, self.V_MAX, 12)
+        kp_int = self._float_to_uint(kp, self.KP_MIN, self.KP_MAX, 12)
+        kd_int = self._float_to_uint(kd, self.KD_MIN, self.KD_MAX, 12)
+        t_int = self._float_to_uint(torque, self.T_MIN, self.T_MAX, 12)
+        
+        # Pack into bytes
+        return bytes([
+            p_int >> 8,
+            p_int & 0xFF,
+            (v_int >> 4) & 0xFF,
+            ((v_int & 0xF) << 4) | ((kp_int >> 8) & 0xF),
+            kp_int & 0xFF,
+            (kd_int >> 4) & 0xFF,
+            ((kd_int & 0xF) << 4) | ((t_int >> 8) & 0xF),
+            t_int & 0xFF
+        ])
     
     def exit_motor_mode(self):
         """

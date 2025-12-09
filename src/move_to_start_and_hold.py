@@ -11,6 +11,7 @@ Press Ctrl+C when you want to shut down.
 """
 
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -19,6 +20,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from motor_drivers import CubeMarsDriver
 from motor_control import Joint
+
+# Control loop timing constants
+CONTROL_RATE_HZ = 100
+CONTROL_PERIOD = 1.0 / CONTROL_RATE_HZ  # 0.01 seconds
 
 
 def load_config():
@@ -81,9 +86,6 @@ def move_and_hold(config):
         print("Moving to starting positions...")
         print("=" * 70 + "\n")
         
-        # Start all movements at the same time
-        import math
-        start_time = time.time()
         duration = 3.0
         
         # Read all current positions
@@ -104,9 +106,18 @@ def move_and_hold(config):
         
         print("\nMoving all motors simultaneously...")
         
-        # Simultaneous S-curve movement
+        # Timing setup for deadline-based loop
+        loop_start = time.perf_counter()
+        next_deadline = loop_start
+        overrun_count = 0
+        max_overrun = 0.0
+        iteration_count = 0
+        
+        # Simultaneous S-curve movement with deadline-based timing
         while True:
-            elapsed = time.time() - start_time
+            iteration_count += 1
+            now = time.perf_counter()
+            elapsed = now - loop_start
             
             if elapsed >= duration:
                 # Final positions
@@ -119,7 +130,7 @@ def move_and_hold(config):
                         kd=joint.default_kd,
                         torque=0.0
                     )
-                    feedback = joint.driver.read_feedback(timeout=0.01)
+                    feedback = joint.driver.read_feedback(timeout=0.005)
                     if feedback:
                         joint.current_position = feedback['position']
                 break
@@ -140,17 +151,29 @@ def move_and_hold(config):
                         torque=0.0
                     )
                     
-                    feedback = joint.driver.read_feedback(timeout=0.01)
+                    feedback = joint.driver.read_feedback(timeout=0.005)
                     if feedback:
                         joint.current_position = feedback['position']
             
-            time.sleep(0.01)  # 100Hz control loop
+            # Deadline-based timing
+            next_deadline += CONTROL_PERIOD
+            sleep_time = next_deadline - time.perf_counter()
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                # Overrun detected
+                overrun_count += 1
+                max_overrun = max(max_overrun, -sleep_time)
+                next_deadline = time.perf_counter()  # Reset to avoid cascading
         
         print(f"\n✓ All motors at starting positions")
+        if overrun_count > 0:
+            print(f"  Movement timing: {overrun_count}/{iteration_count} overruns "
+                  f"(max: {max_overrun*1000:.1f}ms)")
         
         # CRITICAL: Read actual positions after movement
         print("\nReading final positions...")
-        import math
         actual_positions = {}
         
         for motor_id, joint in joints.items():
@@ -180,10 +203,15 @@ def move_and_hold(config):
         print("Motors will actively hold their current positions.")
         print("Press Ctrl+C to shut down.\n")
         
-        last_print = time.time()
+        # Timing setup for holding loop
+        next_deadline = time.perf_counter()
+        last_print_time = next_deadline
+        hold_overrun_count = 0
+        hold_iteration_count = 0
         
         while True:
-            current_time = time.time()
+            hold_iteration_count += 1
+            now = time.perf_counter()
             
             for motor_id, joint in joints.items():
                 # Hold at the ACTUAL position where motor ended up
@@ -197,22 +225,35 @@ def move_and_hold(config):
                     torque=0.0
                 )
                 
-                feedback = joint.driver.read_feedback(timeout=0.01)
+                feedback = joint.driver.read_feedback(timeout=0.005)
                 if feedback:
                     joint.current_position = feedback['position']
+                    joint.current_torque = feedback.get('torque', 0.0)
             
             # Print status every 2 seconds
-            if current_time - last_print >= 2.0:
+            if (now - last_print_time) >= 2.0:
                 print(f"Holding... (Press Ctrl+C to stop)")
                 for motor_id, joint in joints.items():
-                    import math
                     pos_deg = math.degrees(joint.current_position)
-                    torque = joint.current_torque if hasattr(joint, 'current_torque') else 0
+                    torque = getattr(joint, 'current_torque', 0.0)
                     print(f"  {joint.name}: {pos_deg:.2f}° (torque: {torque:.3f} Nm)")
+                if hold_overrun_count > 0:
+                    print(f"  Timing: {hold_overrun_count}/{hold_iteration_count} overruns")
                 print()
-                last_print = current_time
+                last_print_time = now
+                # Reset overrun counter each print cycle
+                hold_overrun_count = 0
+                hold_iteration_count = 0
             
-            time.sleep(0.01)  # 100Hz control loop
+            # Deadline-based timing
+            next_deadline += CONTROL_PERIOD
+            sleep_time = next_deadline - time.perf_counter()
+            
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                hold_overrun_count += 1
+                next_deadline = time.perf_counter()
         
     except KeyboardInterrupt:
         print("\n\nShutting down...")
